@@ -33,7 +33,7 @@ squeezelite:
   common_options:
     - "-a 160:4:16:1"  # ALSA parameters
   #  - "-b 500:2000"  # Buffer settings
-  #  - "-C 5"  # Timeout for control connection
+    - "-C 20"  # Timeout until power script is invoked
     - "-R -u V" # Resampling by squeezelite
     - "-r 44100-44100"  # Supported sample rates
 
