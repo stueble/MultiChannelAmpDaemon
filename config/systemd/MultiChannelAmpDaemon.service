@@ -11,7 +11,7 @@ Restart=on-failure
 RestartSec=5s
 
 # Process management
-PIDFile=/var/run/MultiChannelAmpDaemon.pid
+PIDFile=/run/MultiChannelAmpDaemon.pid
 KillMode=process
 KillSignal=SIGTERM
 TimeoutStopSec=30
