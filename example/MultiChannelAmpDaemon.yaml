@@ -19,7 +19,7 @@ global:
   log_file: /var/log/MultiChannelAmpDaemon.log
 
   # Logging
-  log_level: INFO  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_level: DEBUG  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 # Squeezelite settings
 squeezelite:
