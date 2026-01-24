@@ -1,5 +1,5 @@
 # Description
-Systemd service script to start MultiChannelAmpDaemon.py
+Systemd service script to start ```MultiChannelAmpDaemon.py```
 
 ## Installation
 
