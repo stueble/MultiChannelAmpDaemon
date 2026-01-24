@@ -71,7 +71,7 @@ def main():
     if len(sys.argv) != 3:
         print("Usage: amp_callback.py <player_name> <state>", file=sys.stderr)
         print("  player_name: Name of the Squeezelite player", file=sys.stderr)
-        print("  state: 1 for play, 0 for stop", file=sys.stderr)
+        print("  state: 1 for play, 0 for stop, 2 for initilization (ignored)", file=sys.stderr)
         sys.exit(1)
 
     playerName = sys.argv[1]
@@ -79,17 +79,18 @@ def main():
     # Validate state
     try:
         state = int(sys.argv[2])
-        if state not in [0, 1]:
-            raise ValueError("State must be 0 or 1")
+        if state not in [0, 2]:
+            raise ValueError("State must be 0, 1 or 2")
     except ValueError as e:
         print(f"Invalid state argument: {sys.argv[2]} - {e}", file=sys.stderr)
         sys.exit(1)
 
     # Send event to daemon
-    success = sendEvent(playerName, state)
+    if state in [0, 1]:
+        success = sendEvent(playerName, state)
 
-    if not success:
-        sys.exit(1)
+        if not success:
+            sys.exit(1)
 
     sys.exit(0)
 
