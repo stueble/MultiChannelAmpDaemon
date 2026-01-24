@@ -10,6 +10,7 @@ Copy files to
 * ```/usr/local/bin/amp_callback.py``` - Callback script (executable)
 
 Optionally adapt and copy the following configuration files
+* Install and enable system service script ```MultiChannelDaemon.service```, as described in [config/systemd/](config/systemd/)
 * ```/etc/udev/rules.d/90-usb-audio.rules``` - Ensure that sound card ids will not change, see [config/udev/](config/udev/)
 * ```/etc/asound.conf``` - The ALSA configuration I am using, see [config/alsa/](config/alsa/)
 
