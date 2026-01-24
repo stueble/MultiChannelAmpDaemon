@@ -11,7 +11,7 @@ import socket
 import sys
 import os
 
-SOCKET_PATH = "/var/run/amp_control.sock"
+SOCKET_PATH = "/var/run/MultiChannelAmpDaemon.sock"
 TIMEOUT = 5  # seconds
 
 
@@ -21,7 +21,7 @@ def sendEvent(playerName: str, state: int) -> bool:
 
     Args:
         playerName: Name of the player
-        state: 1 for play, 0 for stop
+        state: 1 for play, 0 for stop, 2 for init
 
     Returns:
         True if successful, False otherwise
@@ -79,7 +79,7 @@ def main():
     # Validate state
     try:
         state = int(sys.argv[2])
-        if state not in [0, 2]:
+        if state not in [0, 1, 2]:
             raise ValueError("State must be 0, 1 or 2")
     except ValueError as e:
         print(f"Invalid state argument: {sys.argv[2]} - {e}", file=sys.stderr)
