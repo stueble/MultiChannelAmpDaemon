@@ -12,8 +12,10 @@ Restart=on-failure
 RestartSec=5s
 
 # User and group
-User=squeezelite
-Group=audio
+# User=squeezelite
+# Group=audio
+User=root
+Group=root
 
 # Logging
 StandardOutput=journal
