@@ -8,6 +8,7 @@ Version: 1.0.0
 
 import yaml
 import sys
+import logging
 import os
 import subprocess
 import signal
@@ -17,6 +18,16 @@ from pathlib import Path
 DEFAULT_CONFIG_PATH = "/etc/MultiChannelAmpDaemon.yaml"
 PID_DIR = "/var/run/squeezelite"
 
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,  # Default level, will be changed to DEBUG if --debug is used
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/var/log/squeezelite-launcher.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('squeezelite-launcher')
 
 class SqueezeliteLauncher:
     """Manages multiple Squeezelite instances"""
@@ -32,12 +43,12 @@ class SqueezeliteLauncher:
         try:
             with open(self.configPath, 'r') as f:
                 self.config = yaml.safe_load(f)
-            print(f"Configuration loaded from: {self.configPath}")
+            logger.info(f"Configuration loaded from: {self.configPath}")
         except FileNotFoundError:
-            print(f"ERROR: Configuration file not found: {self.configPath}", file=sys.stderr)
+            logger.error(f"ERROR: Configuration file not found: {self.configPath}")
             sys.exit(1)
         except yaml.YAMLError as e:
-            print(f"ERROR: Invalid YAML in configuration file: {e}", file=sys.stderr)
+            logger.error(f"ERROR: Invalid YAML in configuration file: {e}")
             sys.exit(1)
 
     def buildSqueezeliteCommand(self, player, soundcard):
@@ -96,23 +107,23 @@ class SqueezeliteLauncher:
             pidFile = Path(PID_DIR) / f"{playerName}.pid"
             pidFile.write_text(str(process.pid))
 
-            print(f"✓ Started {playerName} (PID: {process.pid})")
-            print(f"  Command: {' '.join(cmd)}")
+            logger.info(f"✓ Started {playerName} (PID: {process.pid})")
+            logger.info(f"  Command: {' '.join(cmd)}")
 
             return True
 
         except Exception as e:
-            print(f"✗ Failed to start {playerName}: {e}", file=sys.stderr)
+            logger.error(f"✗ Failed to start {playerName}: {e}")
             return False
 
     def startAllPlayers(self):
         """Start all Squeezelite instances from configuration"""
-        print("Starting all Squeezelite instances...")
-        print("="*80)
+        logger.info("Starting all Squeezelite instances...")
+        logger.info("="*80)
 
         soundcards = self.config.get('soundcards', [])
         if not soundcards:
-            print("ERROR: No soundcards defined in configuration", file=sys.stderr)
+            logger.error("ERROR: No soundcards defined in configuration")
             return False
 
         successCount = 0
@@ -120,16 +131,16 @@ class SqueezeliteLauncher:
 
         for soundcard in soundcards:
             players = soundcard.get('players', [])
-            print(f"\nSoundcard: {soundcard['name']} ({len(players)} players)")
+            logger.info(f"\nSoundcard: {soundcard['name']} ({len(players)} players)")
 
             for player in players:
                 totalCount += 1
                 if self.startPlayer(player, soundcard):
                     successCount += 1
 
-        print("\n" + "="*80)
-        print(f"Started {successCount}/{totalCount} Squeezelite instances")
-        print("="*80)
+        logger.info("\n" + "="*80)
+        logger.info(f"Started {successCount}/{totalCount} Squeezelite instances")
+        logger.info("="*80)
 
         return successCount == totalCount
 
@@ -152,7 +163,7 @@ class SqueezeliteLauncher:
                 process.kill()
                 process.wait()
 
-            print(f"✓ Stopped {playerName}")
+            logger.info(f"✓ Stopped {playerName}")
 
             # Remove PID file
             pidFile = Path(PID_DIR) / f"{playerName}.pid"
@@ -164,17 +175,17 @@ class SqueezeliteLauncher:
             del self.processes[playerName]
 
         except Exception as e:
-            print(f"✗ Error stopping {playerName}: {e}", file=sys.stderr)
+            logger.error(f"✗ Error stopping {playerName}: {e}")
 
     def stopAllPlayers(self):
         """Stop all running Squeezelite instances"""
-        print("\nStopping all Squeezelite instances...")
+        logger.info("\nStopping all Squeezelite instances...")
 
         playerNames = list(self.processes.keys())
         for playerName in playerNames:
             self.stopPlayer(playerName)
 
-        print("All Squeezelite instances stopped")
+        logger.info("All Squeezelite instances stopped")
 
     def monitorProcesses(self):
         """Monitor processes and restart if they crash"""
@@ -187,20 +198,20 @@ class SqueezeliteLauncher:
 
                 # Process has terminated
                 if returncode is not None:
-                    print(f"⚠ Player {playerName} terminated (code: {returncode})", file=sys.stderr)
+                    logger.error(f"⚠ Player {playerName} terminated (code: {returncode})", file=sys.stderr)
 
                     # Find player config and restart
                     for soundcard in self.config.get('soundcards', []):
                         for player in soundcard.get('players', []):
                             if player['name'] == playerName:
-                                print(f"↻ Restarting {playerName}...")
+                                logger.info(f"↻ Restarting {playerName}...")
                                 del self.processes[playerName]
                                 self.startPlayer(player, soundcard)
                                 break
 
     def signalHandler(self, signum, frame):
         """Handle shutdown signals"""
-        print(f"\nReceived signal {signum}, shutting down...")
+        logger.info(f"\nReceived signal {signum}, shutting down...")
         self.running = False
         self.stopAllPlayers()
         sys.exit(0)
@@ -216,12 +227,12 @@ class SqueezeliteLauncher:
 
         # Start all players
         if not self.startAllPlayers():
-            print("ERROR: Failed to start all players", file=sys.stderr)
+            logger.error("ERROR: Failed to start all players")
             sys.exit(1)
 
         # Monitor processes
         self.running = True
-        print("\nMonitoring Squeezelite instances... (Ctrl+C to stop)")
+        logger.info("\nMonitoring Squeezelite instances... (Ctrl+C to stop)")
 
         try:
             self.monitorProcesses()
