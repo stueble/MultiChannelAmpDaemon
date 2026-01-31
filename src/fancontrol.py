@@ -27,7 +27,7 @@ CONFIG = {
     'pwm_shutdown': 20000, # 50% - value on daemon shutdown
 
     # Temperature control
-    'temp_min': 40.0,     # °C - fan starts
+    'temp_min': 30.0,     # °C - fan starts
     'temp_max': 60.0,     # °C - fan at 100%
     'update_interval': 20, # seconds
 
