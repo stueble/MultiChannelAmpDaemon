@@ -1,360 +1,35 @@
 #!/usr/bin/env python3
 """
-GPIO Monitor for Raspberry Pi 5
-Outputs GPIO states in InfluxDB line protocol format for Telegraf
-Uses modern GPIO character device interface (gpiod/lgpio)
+GPIO Monitor using pinctrl
+Works even when GPIOs are claimed by other processes
 
-Version: 1.0.1
+Version: 1.0.0
 """
 
 import sys
+import re
 import time
 import argparse
-from pathlib import Path
-from typing import Dict, List
+import subprocess
+from typing import Dict, Optional
 
-# GPIO configuration - can be loaded from config file
-DEFAULT_GPIOS = {
-    # Power Supply
-    'power_supply': {
-        'pin': 13,
-        'description': 'Main power supply control',
-        'inverted': True  # HIGH=OFF, LOW=ON
-    },
-
-    # Error LED
-    'error_led': {
-        'pin': 26,
-        'description': 'Error LED indicator'
-    },
-
-    # Soundcard 1 (KAB9_1)
-    'soundcard1_suspend': {
-        'pin': 12,
-        'description': 'KAB9_1 SUSPEND control',
-        'inverted': True  # HIGH=suspended, LOW=active
-    },
-    'soundcard1_mute': {
-        'pin': 16,
-        'description': 'KAB9_1 MUTE control',
-        'inverted': True  # HIGH=muted, LOW=unmuted
-    },
-    'soundcard1_led': {
-        'pin': 17,
-        'description': 'KAB9_1 status LED'
-    },
-
-    # Soundcard 2 (KAB9_2)
-    'soundcard2_suspend': {
-        'pin': 6,
-        'description': 'KAB9_2 SUSPEND control',
-        'inverted': True
-    },
-    'soundcard2_mute': {
-        'pin': 25,
-        'description': 'KAB9_2 MUTE control',
-        'inverted': True
-    },
-    'soundcard2_led': {
-        'pin': 27,
-        'description': 'KAB9_2 status LED'
-    },
-
-    # Soundcard 3 (KAB9_3)
-    'soundcard3_suspend': {
-        'pin': 23,
-        'description': 'KAB9_3 SUSPEND control',
-        'inverted': True
-    },
-    'soundcard3_mute': {
-        'pin': 24,
-        'description': 'KAB9_3 MUTE control',
-        'inverted': True
-    },
-    'soundcard3_led': {
-        'pin': 22,
-        'description': 'KAB9_3 status LED'
-    }
+# GPIO mapping
+GPIO_MAP = {
+    'power_supply': {'pin': 13, 'inverted': True, 'desc': 'Power supply'},
+    'error_led': {'pin': 26, 'inverted': False, 'desc': 'Error LED'},
+    'sc1_suspend': {'pin': 12, 'inverted': True, 'desc': 'KAB9_1 suspend'},
+    'sc1_mute': {'pin': 16, 'inverted': True, 'desc': 'KAB9_1 mute'},
+    'sc1_led': {'pin': 17, 'inverted': False, 'desc': 'KAB9_1 LED'},
+    'sc2_suspend': {'pin': 6, 'inverted': True, 'desc': 'KAB9_2 suspend'},
+    'sc2_mute': {'pin': 25, 'inverted': True, 'desc': 'KAB9_2 mute'},
+    'sc2_led': {'pin': 27, 'inverted': False, 'desc': 'KAB9_2 LED'},
+    'sc3_suspend': {'pin': 23, 'inverted': True, 'desc': 'KAB9_3 suspend'},
+    'sc3_mute': {'pin': 24, 'inverted': True, 'desc': 'KAB9_3 mute'},
+    'sc3_led': {'pin': 22, 'inverted': False, 'desc': 'KAB9_3 LED'},
 }
 
 
-class GpioReader:
-    """Reads GPIO states using modern GPIO interfaces"""
-
-    def __init__(self, gpioConfigs: Dict):
-        self.gpioConfigs = gpioConfigs
-        self.method = None
-        self.chip = None
-        self.lines = {}
-
-        # Try different GPIO access methods
-        self._initializeGpio()
-
-    def _initializeGpio(self):
-        """Initialize GPIO access - try lgpio, then gpiod, then RPi.GPIO"""
-
-        # Method 1: Try lgpio (native on Pi 5)
-        try:
-            import lgpio
-            self.chip = lgpio.gpiochip_open(0)
-            self.method = 'lgpio'
-            self.lgpio = lgpio
-            print("Using lgpio interface", file=sys.stderr)
-            return
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"lgpio failed: {e}", file=sys.stderr)
-
-        # Method 2: Try gpiod
-        try:
-            import gpiod
-            self.chip = gpiod.Chip('gpiochip0')
-            self.method = 'gpiod'
-            self.gpiod = gpiod
-            print("Using gpiod interface", file=sys.stderr)
-            return
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"gpiod failed: {e}", file=sys.stderr)
-
-        # Method 3: Try RPi.GPIO (legacy, won't work on Pi 5 with new kernels)
-        try:
-            import RPi.GPIO as GPIO
-            GPIO.setmode(GPIO.BCM)
-            self.method = 'RPi.GPIO'
-            self.GPIO = GPIO
-            print("Using RPi.GPIO interface (legacy)", file=sys.stderr)
-            return
-        except (ImportError, RuntimeError) as e:
-            print(f"RPi.GPIO failed: {e}", file=sys.stderr)
-
-        # No method available
-        print("ERROR: No GPIO library available!", file=sys.stderr)
-        print("Install with: sudo apt install python3-lgpio", file=sys.stderr)
-        self.method = None
-
-    def readGpioLgpio(self, pin: int) -> int:
-        """Read GPIO value via lgpio"""
-        try:
-            # lgpio can read GPIOs even if they're claimed by another process
-            # Use gpio_claim_input with AS_IS flag to read without disturbing
-            if pin not in self.lines:
-                # Claim the line for input temporarily
-                # Use LGPIO flags: AS_IS means don't change pull-up/down
-                # We just want to read the current state
-                handle = self.lgpio.gpio_claim_input(self.chip, pin, self.lgpio.SET_PULL_NONE)
-                self.lines[pin] = handle
-
-            # Read the GPIO value
-            value = self.lgpio.gpio_read(self.chip, pin)
-            return value
-
-        except Exception as e:
-            # If claiming fails, the pin might be in use
-            # Try direct read without claiming (this might fail)
-            try:
-                value = self.lgpio.gpio_read(self.chip, pin)
-                return value
-            except:
-                # Last resort: try to get line info
-                try:
-                    # lgpio allows reading line state even if claimed elsewhere
-                    # but we need to use a different approach
-                    # Read from /sys/kernel/debug/gpio or accept we can't read
-                    return self._readGpioFromDebugfs(pin)
-                except:
-                    return -1
-
-    def _readGpioFromDebugfs(self, pin: int) -> int:
-        """Try to read GPIO value from debugfs (fallback)"""
-        try:
-            # This requires debugfs to be mounted and readable
-            with open('/sys/kernel/debug/gpio', 'r') as f:
-                lines = f.readlines()
-                for line in lines:
-                    # Look for our GPIO line
-                    # Format: gpio-533 (some_name) out hi/lo
-                    if f'gpio-{pin} ' in line or f' gpio-{pin} ' in line:
-                        if ' hi' in line.lower():
-                            return 1
-                        elif ' lo' in line.lower():
-                            return 0
-        except:
-            pass
-        return -1
-
-    def readGpioGpiod(self, pin: int) -> int:
-        """Read GPIO value via gpiod"""
-        try:
-            line = self.chip.get_line(pin)
-            if not line.is_requested():
-                line.request(consumer="gpio-monitor", type=self.gpiod.LINE_REQ_DIR_IN)
-            value = line.get_value()
-            return value
-        except Exception as e:
-            return -1
-
-    def readGpioRpi(self, pin: int) -> int:
-        """Read GPIO value via RPi.GPIO"""
-        try:
-            self.GPIO.setup(pin, self.GPIO.IN)
-            return self.GPIO.input(pin)
-        except:
-            return -1
-
-    def readGpio(self, pin: int) -> int:
-        """Read GPIO value (0, 1, or -1 for error)"""
-        if self.method == 'lgpio':
-            return self.readGpioLgpio(pin)
-        elif self.method == 'gpiod':
-            return self.readGpioGpiod(pin)
-        elif self.method == 'RPi.GPIO':
-            return self.readGpioRpi(pin)
-        else:
-            return -1
-
-    def readAllGpios(self) -> Dict[str, Dict]:
-        """Read all configured GPIOs"""
-        results = {}
-
-        for name, config in self.gpioConfigs.items():
-            pin = config['pin']
-            rawValue = self.readGpio(pin)
-
-            # Apply inversion if configured
-            if config.get('inverted', False) and rawValue != -1:
-                value = 1 - rawValue
-            else:
-                value = rawValue
-
-            results[name] = {
-                'pin': pin,
-                'raw_value': rawValue,
-                'value': value,
-                'description': config.get('description', ''),
-                'error': rawValue == -1
-            }
-
-        return results
-
-    def cleanup(self):
-        """Cleanup GPIO resources"""
-        if self.method == 'lgpio' and self.chip is not None:
-            try:
-                # Free all claimed lines
-                for pin, handle in self.lines.items():
-                    try:
-                        self.lgpio.gpio_free(self.chip, pin)
-                    except:
-                        pass
-                self.lgpio.gpiochip_close(self.chip)
-            except:
-                pass
-        elif self.method == 'gpiod' and self.chip is not None:
-            try:
-                self.chip.close()
-            except:
-                pass
-
-
-class TelegrafFormatter:
-    """Formats GPIO data for Telegraf (InfluxDB line protocol)"""
-
-    def __init__(self, measurement: str = "gpio"):
-        self.measurement = measurement
-
-    def formatLineProtocol(self, gpioData: Dict[str, Dict], timestamp: int = None) -> List[str]:
-        """
-        Format GPIO data in InfluxDB line protocol
-
-        Format: measurement,tag1=value1,tag2=value2 field1=value1,field2=value2 timestamp
-        """
-        lines = []
-
-        for name, data in gpioData.items():
-            if data['error']:
-                continue
-
-            # Tags (indexed fields)
-            tags = [
-                f"gpio_name={name}",
-                f"pin={data['pin']}"
-            ]
-            tagsStr = ','.join(tags)
-
-            # Fields (data values)
-            fields = [
-                f"value={data['value']}i",
-                f"raw_value={data['raw_value']}i"
-            ]
-            fieldsStr = ','.join(fields)
-
-            # Build line
-            line = f"{self.measurement},{tagsStr} {fieldsStr}"
-
-            # Add timestamp if provided (nanoseconds)
-            if timestamp:
-                line += f" {timestamp}"
-
-            lines.append(line)
-
-        return lines
-
-    def formatJson(self, gpioData: Dict[str, Dict]) -> str:
-        """Format GPIO data as JSON"""
-        import json
-        return json.dumps(gpioData, indent=2)
-
-    def formatPrometheus(self, gpioData: Dict[str, Dict]) -> List[str]:
-        """Format GPIO data in Prometheus format"""
-        lines = []
-
-        # Add HELP and TYPE for each metric
-        lines.append('# HELP gpio_value GPIO pin value (0 or 1)')
-        lines.append('# TYPE gpio_value gauge')
-
-        for name, data in gpioData.items():
-            if data['error']:
-                continue
-
-            # Prometheus format: metric_name{label1="value1",label2="value2"} value
-            labels = f'gpio_name="{name}",pin="{data["pin"]}",description="{data["description"]}"'
-            lines.append(f'gpio_value{{{labels}}} {data["value"]}')
-
-        return lines
-
-    def formatHuman(self, gpioData: Dict[str, Dict]) -> str:
-        """Format GPIO data in human-readable format"""
-        lines = []
-        lines.append("GPIO Status:")
-        lines.append("=" * 80)
-
-        errorCount = 0
-        for name, data in gpioData.items():
-            if data['error']:
-                status = "ERROR"
-                value = "N/A"
-                errorCount += 1
-                reason = f"(Pin {data['pin']} - check permissions)"
-            else:
-                value = data['value']
-                status = "ON" if value == 1 else "OFF"
-                reason = ""
-
-            lines.append(f"{name:25} (GPIO {data['pin']:2d}): {status:5} [{value}]  {data['description']} {reason}")
-
-        if errorCount > 0:
-            lines.append("")
-            lines.append(f"⚠ {errorCount} GPIO(s) could not be read")
-            lines.append("Make sure lgpio is installed: sudo apt install python3-lgpio")
-            lines.append("Try running with: sudo " + ' '.join(sys.argv))
-
-        return '\n'.join(lines)
-
-
-def loadConfigFromYaml(yamlPath: str) -> Dict:
+def loadConfigFromYaml(yamlPath: str) -> Optional[Dict]:
     """Load GPIO configuration from MultiChannelAmpDaemon YAML"""
     try:
         import yaml
@@ -375,7 +50,8 @@ def loadConfigFromYaml(yamlPath: str) -> Dict:
         if 'gpio_error_led' in globalConfig:
             gpioConfigs['error_led'] = {
                 'pin': globalConfig['gpio_error_led'],
-                'description': 'Error LED indicator'
+                'description': 'Error LED indicator',
+                'inverted': False
             }
 
         # Extract soundcard GPIOs
@@ -385,137 +61,274 @@ def loadConfigFromYaml(yamlPath: str) -> Dict:
             gpio = soundcard.get('gpio', {})
 
             if 'suspend' in gpio:
-                gpioConfigs[f'soundcard{scId}_suspend'] = {
+                gpioConfigs[f'sc{scId}_suspend'] = {
                     'pin': gpio['suspend'],
-                    'description': f'{scName} SUSPEND control',
+                    'description': f'{scName} SUSPEND',
                     'inverted': True
                 }
 
             if 'mute' in gpio:
-                gpioConfigs[f'soundcard{scId}_mute'] = {
+                gpioConfigs[f'sc{scId}_mute'] = {
                     'pin': gpio['mute'],
-                    'description': f'{scName} MUTE control',
+                    'description': f'{scName} MUTE',
                     'inverted': True
                 }
 
             if 'led' in gpio:
-                gpioConfigs[f'soundcard{scId}_led'] = {
+                gpioConfigs[f'sc{scId}_led'] = {
                     'pin': gpio['led'],
-                    'description': f'{scName} status LED'
+                    'description': f'{scName} LED',
+                    'inverted': False
                 }
 
-        return gpioConfigs
+        # Convert to GPIO_MAP format
+        result = {}
+        for name, cfg in gpioConfigs.items():
+            result[name] = {
+                'pin': cfg['pin'],
+                'inverted': cfg.get('inverted', False),
+                'desc': cfg['description']
+            }
+
+        return result
 
     except Exception as e:
         print(f"Error loading config from {yamlPath}: {e}", file=sys.stderr)
         return None
 
 
-def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(
-        description='GPIO Monitor for Raspberry Pi - Telegraf compatible output',
-        epilog='Version 1.0.1'
-    )
+def runPinctrl() -> Optional[str]:
+    """Run pinctrl get command to get GPIO states"""
+    try:
+        result = subprocess.run(
+            ['pinctrl', 'get'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
 
+        if result.returncode == 0:
+            return result.stdout
+        else:
+            print(f"Error running pinctrl: {result.stderr}", file=sys.stderr)
+            return None
+
+    except FileNotFoundError:
+        print("ERROR: pinctrl command not found", file=sys.stderr)
+        print("Install with: sudo apt install pinctrl", file=sys.stderr)
+        return None
+    except subprocess.TimeoutExpired:
+        print("ERROR: pinctrl command timed out", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return None
+
+
+def parsePinctrlOutput(output: str, gpioMap: Dict) -> Dict:
+    """Parse pinctrl output to extract GPIO states"""
+    results = {}
+
+    # Build a set of pins we're interested in
+    pinsOfInterest = {config['pin'] for config in gpioMap.values()}
+
+    # Parse pinctrl output
+    # Format example:
+    # 12: ip    -- | hi // GPIO12 = none
+    # 13: op dh -- | hi // GPIO13 = none
+
+    for line in output.split('\n'):
+        # Match pattern like "12: op dh -- | hi // GPIO12"
+        match = re.match(r'^\s*(\d+):\s+(\w+)\s+.*?\|\s+(hi|lo)\s+//', line)
+        if match:
+            pin = int(match.group(1))
+            direction = match.group(2)  # ip=input, op=output
+            level = match.group(3)  # hi or lo
+
+            if pin in pinsOfInterest:
+                rawValue = 1 if level == 'hi' else 0
+
+                # Find the corresponding config
+                for name, config in gpioMap.items():
+                    if config['pin'] == pin:
+                        # Apply inversion
+                        if config['inverted']:
+                            value = 1 - rawValue
+                        else:
+                            value = rawValue
+
+                        results[name] = {
+                            'pin': pin,
+                            'raw_value': rawValue,
+                            'value': value,
+                            'direction': 'in' if direction == 'ip' else 'out',
+                            'description': config['desc'],
+                            'error': False
+                        }
+                        break
+
+    # Add missing GPIOs as errors
+    for name, config in gpioMap.items():
+        if name not in results:
+            results[name] = {
+                'pin': config['pin'],
+                'raw_value': -1,
+                'value': -1,
+                'direction': 'unknown',
+                'description': config['desc'],
+                'error': True
+            }
+
+    return results
+
+
+def readAllGpios(gpioMap: Dict) -> Optional[Dict]:
+    """Read all configured GPIOs using pinctrl"""
+    output = runPinctrl()
+    if output is None:
+        return None
+
+    return parsePinctrlOutput(output, gpioMap)
+
+
+def formatInflux(data: Dict, measurement: str = 'gpio') -> str:
+    """Format as InfluxDB line protocol"""
+    lines = []
+    timestamp = int(time.time() * 1e9)
+
+    for name, gpio in data.items():
+        if gpio['error']:
+            continue
+
+        tags = f"gpio_name={name},pin={gpio['pin']},direction={gpio['direction']}"
+        fields = f"value={gpio['value']}i,raw_value={gpio['raw_value']}i"
+        lines.append(f"{measurement},{tags} {fields} {timestamp}")
+
+    return '\n'.join(lines)
+
+
+def formatHuman(data: Dict) -> str:
+    """Format human-readable"""
+    lines = []
+    lines.append("GPIO Status (via pinctrl):")
+    lines.append("=" * 90)
+
+    errorCount = 0
+    for name, gpio in data.items():
+        if gpio['error']:
+            status = "ERROR"
+            extra = ""
+            errorCount += 1
+        else:
+            status = "ON " if gpio['value'] == 1 else "OFF"
+            extra = f"[{gpio['direction']:3s}, raw={gpio['raw_value']}]"
+
+        lines.append(f"{name:20} GPIO{gpio['pin']:3d}: {status:5s} {extra:15s} {gpio['description']}")
+
+    if errorCount > 0:
+        lines.append("")
+        lines.append(f"⚠ {errorCount} GPIO(s) could not be read")
+
+    return '\n'.join(lines)
+
+
+def formatJson(data: Dict) -> str:
+    """Format as JSON"""
+    import json
+    return json.dumps(data, indent=2)
+
+
+def formatPrometheus(data: Dict) -> str:
+    """Format as Prometheus metrics"""
+    lines = []
+    lines.append('# HELP gpio_value GPIO pin value (0 or 1)')
+    lines.append('# TYPE gpio_value gauge')
+
+    for name, gpio in data.items():
+        if gpio['error']:
+            continue
+
+        labels = f'gpio_name="{name}",pin="{gpio["pin"]}",direction="{gpio["direction"]}",description="{gpio["description"]}"'
+        lines.append(f'gpio_value{{{labels}}} {gpio["value"]}')
+
+    return '\n'.join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='GPIO Monitor using pinctrl - works with claimed GPIOs',
+        epilog='Version 1.0.0'
+    )
     parser.add_argument(
         '--format', '-f',
-        choices=['influx', 'json', 'prometheus', 'human'],
-        default='influx',
-        help='Output format (default: influx)'
+        choices=['influx', 'human', 'json', 'prometheus'],
+        default='human',
+        help='Output format (default: human)'
     )
-
     parser.add_argument(
         '--config', '-c',
         help='Load GPIO configuration from MultiChannelAmpDaemon YAML file'
     )
-
     parser.add_argument(
         '--measurement', '-m',
         default='gpio',
-        help='Measurement name for InfluxDB line protocol (default: gpio)'
+        help='Measurement name for InfluxDB (default: gpio)'
     )
-
     parser.add_argument(
         '--continuous',
         action='store_true',
-        help='Continuous monitoring mode (output every second)'
+        help='Continuous monitoring'
     )
-
     parser.add_argument(
-        '--interval',
+        '--interval', '-i',
         type=int,
         default=1,
-        help='Interval in seconds for continuous mode (default: 1)'
+        help='Update interval in seconds (default: 1)'
     )
-
     parser.add_argument(
         '--version',
         action='version',
-        version='%(prog)s 1.0.1'
+        version='%(prog)s 1.0.0'
     )
 
     args = parser.parse_args()
 
-    # Load GPIO configuration
+    # Load GPIO map
     if args.config:
-        gpioConfigs = loadConfigFromYaml(args.config)
-        if not gpioConfigs:
-            print("Failed to load configuration, using defaults", file=sys.stderr)
-            gpioConfigs = DEFAULT_GPIOS
+        gpioMap = loadConfigFromYaml(args.config)
+        if gpioMap is None:
+            print("Using default GPIO mapping", file=sys.stderr)
+            gpioMap = GPIO_MAP
     else:
-        gpioConfigs = DEFAULT_GPIOS
+        gpioMap = GPIO_MAP
 
-    # Initialize reader and formatter
-    reader = GpioReader(gpioConfigs)
-    formatter = TelegrafFormatter(measurement=args.measurement)
-
-    if reader.method is None:
-        print("ERROR: Cannot access GPIO - no working GPIO library found", file=sys.stderr)
-        sys.exit(1)
-
-    # Single read or continuous monitoring
     try:
-        if args.continuous:
-            while True:
-                gpioData = reader.readAllGpios()
-
-                if args.format == 'influx':
-                    timestamp = int(time.time() * 1e9)  # nanoseconds
-                    for line in formatter.formatLineProtocol(gpioData, timestamp):
-                        print(line)
-                elif args.format == 'json':
-                    print(formatter.formatJson(gpioData))
-                elif args.format == 'prometheus':
-                    for line in formatter.formatPrometheus(gpioData):
-                        print(line)
-                else:  # human
-                    print(formatter.formatHuman(gpioData))
-                    print()
-
-                sys.stdout.flush()
-                time.sleep(args.interval)
-        else:
-            # Single read
-            gpioData = reader.readAllGpios()
+        while True:
+            data = readAllGpios(gpioMap)
+            if data is None:
+                sys.exit(1)
 
             if args.format == 'influx':
-                for line in formatter.formatLineProtocol(gpioData):
-                    print(line)
+                print(formatInflux(data, args.measurement))
             elif args.format == 'json':
-                print(formatter.formatJson(gpioData))
+                print(formatJson(data))
             elif args.format == 'prometheus':
-                for line in formatter.formatPrometheus(gpioData):
-                    print(line)
+                print(formatPrometheus(data))
             else:  # human
-                print(formatter.formatHuman(gpioData))
+                print(formatHuman(data))
+
+            if not args.continuous:
+                break
+
+            if args.format == 'human':
+                print()  # Empty line between updates
+
+            sys.stdout.flush()
+            time.sleep(args.interval)
 
     except KeyboardInterrupt:
         print("\nMonitoring stopped", file=sys.stderr)
-    finally:
-        reader.cleanup()
-        sys.exit(0)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
