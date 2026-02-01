@@ -14,7 +14,7 @@ from typing import Optional
 
 # Configuration
 CONFIG = {
-    'sensor_ids': ['28-00000034e4f3', '28-00000050cf0c', '28-00000034e4f3'],  # List of sensor IDs
+    'sensor_ids': ['28-00000034e4f3', '28-00000034e4f4', '28-00000034e4f5'],  # List of sensor IDs
     'sensor_path': '/sys/bus/w1/devices/{}/w1_slave',
     'pwm_chip': '/sys/class/pwm/pwmchip0',
     'pwm_channel': 2,
@@ -29,6 +29,7 @@ CONFIG = {
     # Temperature control
     'temp_min': 40.0,     # °C - fan starts
     'temp_max': 60.0,     # °C - fan at 100%
+    'temp_hysteresis': 2.0,  # °C - hysteresis to prevent oscillation
     'update_interval': 20, # seconds
 
     # Error handling
@@ -45,11 +46,12 @@ class PWMFanController:
         self.running = False
         self.pwm_path = None
         self.current_duty = 0
+        self.fan_running = False  # Track if fan is currently running for hysteresis
 
     def setup_logging(self):
         """Configure logging to systemd journal."""
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG,
             format='%(levelname)s: %(message)s',
             handlers=[logging.StreamHandler(sys.stdout)]
         )
@@ -89,17 +91,30 @@ class PWMFanController:
         return None
 
     def calculate_duty_cycle(self, temp: float) -> int:
-        """Calculate PWM duty cycle based on temperature."""
-        if temp < self.config['temp_min']:
-            # Below minimum temperature - fan off
+        """Calculate PWM duty cycle based on temperature with hysteresis."""
+        hysteresis = self.config['temp_hysteresis']
+
+        # Determine effective threshold based on current fan state
+        if self.fan_running:
+            # Fan is running - use lower threshold (temp_min - hysteresis) to turn off
+            effective_min = self.config['temp_min'] - hysteresis
+        else:
+            # Fan is off - use normal threshold (temp_min) to turn on
+            effective_min = self.config['temp_min']
+
+        if temp < effective_min:
+            # Below minimum temperature (with hysteresis) - fan off
+            self.fan_running = False
             return 0
 
         elif temp >= self.config['temp_max']:
             # Above maximum temperature - fan at 100%
+            self.fan_running = True
             return self.config['pwm_max']
 
         else:
             # Linear interpolation between min and max
+            # Use actual temp_min for calculation, not effective_min
             temp_range = self.config['temp_max'] - self.config['temp_min']
             temp_offset = temp - self.config['temp_min']
             temp_ratio = temp_offset / temp_range
@@ -107,6 +122,7 @@ class PWMFanController:
             duty_range = self.config['pwm_max'] - self.config['pwm_min']
             duty_cycle = self.config['pwm_min'] + int(duty_range * temp_ratio)
 
+            self.fan_running = True
             return duty_cycle
 
     def setup_pwm(self):
@@ -212,6 +228,7 @@ class PWMFanController:
         self.logger.info("PWM Fan Control Daemon starting...")
         self.logger.info(f"Sensors: {', '.join(self.config['sensor_ids'])}")
         self.logger.info(f"Temperature range: {self.config['temp_min']}°C - {self.config['temp_max']}°C")
+        self.logger.info(f"Hysteresis: {self.config['temp_hysteresis']}°C")
         self.logger.info(f"Update interval: {self.config['update_interval']} seconds")
 
         # Register signal handlers
