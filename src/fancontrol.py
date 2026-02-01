@@ -14,7 +14,7 @@ from typing import Optional
 
 # Configuration
 CONFIG = {
-    'sensor_id': '28-00000034e4f3',
+    'sensor_ids': ['28-00000034e4f3', '28-00000050cf0c', '28-00000034e4f5'],  # List of sensor IDs
     'sensor_path': '/sys/bus/w1/devices/{}/w1_slave',
     'pwm_chip': '/sys/class/pwm/pwmchip0',
     'pwm_channel': 2,
@@ -27,7 +27,7 @@ CONFIG = {
     'pwm_shutdown': 20000, # 50% - value on daemon shutdown
 
     # Temperature control
-    'temp_min': 30.0,     # °C - fan starts
+    'temp_min': 40.0,     # °C - fan starts
     'temp_max': 60.0,     # °C - fan at 100%
     'update_interval': 20, # seconds
 
@@ -55,26 +55,36 @@ class PWMFanController:
         )
 
     def read_temperature(self) -> Optional[float]:
-        """Read temperature from DS18B20 sensor."""
-        sensor_file = self.config['sensor_path'].format(self.config['sensor_id'])
+        """Read temperature from all DS18B20 sensors and return the maximum value."""
+        temperatures = []
 
-        try:
-            with open(sensor_file, 'r') as f:
-                lines = f.readlines()
+        for sensor_id in self.config['sensor_ids']:
+            sensor_file = self.config['sensor_path'].format(sensor_id)
 
-            # Check if reading is valid
-            if lines[0].strip().endswith('YES'):
-                # Extract temperature value
-                temp_pos = lines[1].find('t=')
-                if temp_pos != -1:
-                    temp_string = lines[1][temp_pos + 2:]
-                    temp_c = float(temp_string) / 1000.0
-                    return temp_c
+            try:
+                with open(sensor_file, 'r') as f:
+                    lines = f.readlines()
 
-        except FileNotFoundError:
-            self.logger.error(f"Sensor {self.config['sensor_id']} not found")
-        except (IOError, ValueError) as e:
-            self.logger.error(f"Error reading temperature: {e}")
+                # Check if reading is valid
+                if lines[0].strip().endswith('YES'):
+                    # Extract temperature value
+                    temp_pos = lines[1].find('t=')
+                    if temp_pos != -1:
+                        temp_string = lines[1][temp_pos + 2:]
+                        temp_c = float(temp_string) / 1000.0
+                        temperatures.append((sensor_id, temp_c))
+                        self.logger.debug(f"Sensor {sensor_id}: {temp_c:.1f}°C")
+
+            except FileNotFoundError:
+                self.logger.warning(f"Sensor {sensor_id} not found")
+            except (IOError, ValueError) as e:
+                self.logger.warning(f"Error reading sensor {sensor_id}: {e}")
+
+        if temperatures:
+            # Return the maximum temperature
+            max_sensor, max_temp = max(temperatures, key=lambda x: x[1])
+            self.logger.debug(f"Using maximum temperature from sensor {max_sensor}")
+            return max_temp
 
         return None
 
@@ -200,7 +210,7 @@ class PWMFanController:
         """Main daemon loop."""
         self.setup_logging()
         self.logger.info("PWM Fan Control Daemon starting...")
-        self.logger.info(f"Sensor: {self.config['sensor_id']}")
+        self.logger.info(f"Sensors: {', '.join(self.config['sensor_ids'])}")
         self.logger.info(f"Temperature range: {self.config['temp_min']}°C - {self.config['temp_max']}°C")
         self.logger.info(f"Update interval: {self.config['update_interval']} seconds")
 
