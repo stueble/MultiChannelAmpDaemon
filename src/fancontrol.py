@@ -14,7 +14,7 @@ from typing import Optional
 
 # Configuration
 CONFIG = {
-    'sensor_ids': ['28-00000034e4f3', '00000050cf0c', '28-00000034e4f3'],  # List of sensor IDs
+    'sensor_ids': ['28-00000034e4f3', '28-00000050cf0c', '28-00000034e4f3'],  # List of sensor IDs
     'sensor_path': '/sys/bus/w1/devices/{}/w1_slave',
     'pwm_chip': '/sys/class/pwm/pwmchip0',
     'pwm_channel': 2,
