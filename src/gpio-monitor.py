@@ -3,7 +3,7 @@
 GPIO Monitor using pinctrl
 Works even when GPIOs are claimed by other processes
 
-Version: 1.0.0
+Version: 1.0.3
 """
 
 import sys
@@ -15,17 +15,17 @@ from typing import Dict, Optional
 
 # GPIO mapping
 GPIO_MAP = {
-    'power_supply': {'pin': 13, 'inverted': True, 'desc': 'Power supply'},
-    'error_led': {'pin': 26, 'inverted': False, 'desc': 'Error LED'},
-    'sc1_suspend': {'pin': 12, 'inverted': True, 'desc': 'KAB9_1 suspend'},
-    'sc1_mute': {'pin': 16, 'inverted': True, 'desc': 'KAB9_1 mute'},
-    'sc1_led': {'pin': 17, 'inverted': False, 'desc': 'KAB9_1 LED'},
-    'sc2_suspend': {'pin': 6, 'inverted': True, 'desc': 'KAB9_2 suspend'},
-    'sc2_mute': {'pin': 25, 'inverted': True, 'desc': 'KAB9_2 mute'},
-    'sc2_led': {'pin': 27, 'inverted': False, 'desc': 'KAB9_2 LED'},
-    'sc3_suspend': {'pin': 23, 'inverted': True, 'desc': 'KAB9_3 suspend'},
-    'sc3_mute': {'pin': 24, 'inverted': True, 'desc': 'KAB9_3 mute'},
-    'sc3_led': {'pin': 22, 'inverted': False, 'desc': 'KAB9_3 LED'},
+    'power_supply': {'pin': 13, 'inverted': True, 'desc': 'Power supply', 'order': 1},
+    'sc1_suspend': {'pin': 12, 'inverted': False, 'desc': 'KAB9_1 suspend', 'order': 2},
+    'sc1_mute': {'pin': 16, 'inverted': False, 'desc': 'KAB9_1 mute', 'order': 3},
+    'sc1_led': {'pin': 17, 'inverted': False, 'desc': 'KAB9_1 LED', 'order': 4},
+    'sc2_suspend': {'pin': 6, 'inverted': False, 'desc': 'KAB9_2 suspend', 'order': 5},
+    'sc2_mute': {'pin': 25, 'inverted': False, 'desc': 'KAB9_2 mute', 'order': 6},
+    'sc2_led': {'pin': 27, 'inverted': False, 'desc': 'KAB9_2 LED', 'order': 7},
+    'sc3_suspend': {'pin': 23, 'inverted': False, 'desc': 'KAB9_3 suspend', 'order': 8},
+    'sc3_mute': {'pin': 24, 'inverted': False, 'desc': 'KAB9_3 mute', 'order': 9},
+    'sc3_led': {'pin': 22, 'inverted': False, 'desc': 'KAB9_3 LED', 'order': 10},
+    'error_led': {'pin': 26, 'inverted': False, 'desc': 'Error LED', 'order': 11},
 }
 
 
@@ -64,14 +64,14 @@ def loadConfigFromYaml(yamlPath: str) -> Optional[Dict]:
                 gpioConfigs[f'sc{scId}_suspend'] = {
                     'pin': gpio['suspend'],
                     'description': f'{scName} SUSPEND',
-                    'inverted': True
+                    'inverted': False  # HIGH = suspended (which we show as value=1)
                 }
 
             if 'mute' in gpio:
                 gpioConfigs[f'sc{scId}_mute'] = {
                     'pin': gpio['mute'],
                     'description': f'{scName} MUTE',
-                    'inverted': True
+                    'inverted': False  # HIGH = muted (which we show as value=1)
                 }
 
             if 'led' in gpio:
@@ -83,11 +83,43 @@ def loadConfigFromYaml(yamlPath: str) -> Optional[Dict]:
 
         # Convert to GPIO_MAP format
         result = {}
-        for name, cfg in gpioConfigs.items():
-            result[name] = {
+        order = 1
+
+        # Add power supply first
+        if 'power_supply' in gpioConfigs:
+            cfg = gpioConfigs['power_supply']
+            result['power_supply'] = {
                 'pin': cfg['pin'],
                 'inverted': cfg.get('inverted', False),
-                'desc': cfg['description']
+                'desc': cfg['description'],
+                'order': order
+            }
+            order += 1
+
+        # Add soundcards in order
+        for scId in sorted([sc['id'] for sc in config.get('soundcards', [])]):
+            for soundcard in config.get('soundcards', []):
+                if soundcard['id'] == scId:
+                    for gpio_type in ['suspend', 'mute', 'led']:
+                        key = f'sc{scId}_{gpio_type}'
+                        if key in gpioConfigs:
+                            cfg = gpioConfigs[key]
+                            result[key] = {
+                                'pin': cfg['pin'],
+                                'inverted': cfg.get('inverted', False),
+                                'desc': cfg['description'],
+                                'order': order
+                            }
+                            order += 1
+
+        # Add error LED last
+        if 'error_led' in gpioConfigs:
+            cfg = gpioConfigs['error_led']
+            result['error_led'] = {
+                'pin': cfg['pin'],
+                'inverted': cfg.get('inverted', False),
+                'desc': cfg['description'],
+                'order': order
             }
 
         return result
@@ -163,6 +195,7 @@ def parsePinctrlOutput(output: str, gpioMap: Dict) -> Dict:
                             'value': value,
                             'direction': 'in' if direction == 'ip' else 'out',
                             'description': config['desc'],
+                            'order': config.get('order', 999),
                             'error': False
                         }
                         break
@@ -176,6 +209,7 @@ def parsePinctrlOutput(output: str, gpioMap: Dict) -> Dict:
                 'value': -1,
                 'direction': 'unknown',
                 'description': config['desc'],
+                'order': config.get('order', 999),
                 'error': True
             }
 
@@ -213,8 +247,14 @@ def formatHuman(data: Dict) -> str:
     lines.append("GPIO Status (via pinctrl):")
     lines.append("=" * 90)
 
+    # Sort by order field if available, otherwise alphabetically
+    sortedItems = sorted(
+        data.items(),
+        key=lambda x: x[1].get('order', 999) if not x[1]['error'] else 1000
+    )
+
     errorCount = 0
-    for name, gpio in data.items():
+    for name, gpio in sortedItems:
         if gpio['error']:
             status = "ERROR"
             extra = ""
