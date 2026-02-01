@@ -13,7 +13,7 @@ with open(duty_path, "r") as f:
 #    period = int(f.read().strip())
 
 # Prozentwert berechnen
-percent = (duty / 40000) * 100
+percent = round((duty / 40000) * 100, 1)
 
 # Ausgabe im Telegraf Line Protocol
 print(f"raspberrypi_pwm,duty=fan value={percent}")
