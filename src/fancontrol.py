@@ -29,7 +29,7 @@ CONFIG = {
     # Temperature control
     'temp_min': 40.0,     # °C - fan starts
     'temp_max': 65.0,     # °C - fan at 100%
-    'temp_hysteresis': 3.0,  # °C - hysteresis to prevent oscillation
+    'temp_hysteresis': 5.0,  # °C - hysteresis to prevent oscillation
     'update_interval': 30, # seconds
 
     # Error handling
