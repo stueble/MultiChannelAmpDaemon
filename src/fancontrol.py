@@ -28,9 +28,9 @@ CONFIG = {
 
     # Temperature control
     'temp_min': 40.0,     # °C - fan starts
-    'temp_max': 60.0,     # °C - fan at 100%
+    'temp_max': 65.0,     # °C - fan at 100%
     'temp_hysteresis': 3.0,  # °C - hysteresis to prevent oscillation
-    'update_interval': 20, # seconds
+    'update_interval': 30, # seconds
 
     # Error handling
     'sensor_fail_pwm': 20000,  # 50% on sensor failure
@@ -51,7 +51,7 @@ class PWMFanController:
     def setup_logging(self):
         """Configure logging to systemd journal."""
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=logging.INFO,
             format='%(levelname)s: %(message)s',
             handlers=[logging.StreamHandler(sys.stdout)]
         )
