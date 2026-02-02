@@ -593,7 +593,7 @@ class AmpControlDaemon:
             # Read temperature if sensor configured
             temperature = None
             if sc.config.tempSensor:
-                temperature = self.readTemperature(sc.config.tempSensor)
+                temperature = round(self.readTemperature(sc.config.tempSensor),1)
 
             status['soundcards'][scId] = {
                 'id': scId,
