@@ -6,6 +6,7 @@ This repository includes the following components:
 - *example/MultiChannelAmpDaemon.yaml*: Example configuration file for the daemon
 - *src/MultiChannelAmpCallback.py*: A small command line program to send squeezelite player status information (play/stop) to the daemon
 - *src/fancontrol.py*: Another daemon to control the case fan based on temperature sensors connected to the KAB9 sound cards as well as the CPU and SOC temperatures
+- *src/squeezelite-launcher*: Systemd init script to start all squeezelite instances configurured in MultiChannelAmpDaemon.yaml
 - *src/amp_status_to_telegraf.py*: Another tool to collect amp-specific monitoring data and output it using influx format
 - *config/alsa/asound.conf*: My configuration file for the three KAB9 sound cards
 
