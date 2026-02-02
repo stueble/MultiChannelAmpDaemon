@@ -60,7 +60,7 @@ def main():
             f'active={bool_to_lp(sc.get("active", False))},'
             f'player_count={sc.get("player_count", 0)},'
             f'active_players="{escape_string(active_players)}",'
-            f'temperature="{sc.get("temperature")} '
+            f'temperature={sc.get("temperature")} '
             f'{timestamp_ns}'
         )
 
