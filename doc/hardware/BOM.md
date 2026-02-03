@@ -9,8 +9,9 @@
 | 1 | DC 5v-36v 400W FET Module Board | Used to drive the fan using PWM signal |
 | 1 | Sunon MagLev MEC038V2-000U-A99 fan | 24V fan to be able to drive it directly from the power supply |
 | 1 | Hailege PC817 8 Channel Optokoppler Module | Resistors are too high for 3,3V of the GPIOs. I removed both, SMD LED and SMD resistor and connected a LED for the case in combination with another resistor |
-| 24 | 
-| x | LED, cable, connectors
+| 24 | KF2EDGWB | 4-Pin connector named KF2EDGWB at aliexpress |
+| x | Misc | LEDs, cable, connectors | 
+
 
 
 
