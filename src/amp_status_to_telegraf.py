@@ -71,7 +71,7 @@ def main():
             f'type=player,'
             f'soundcard_id={player.get("soundcard_id")},'
             f'soundcard_name={escape_string(player.get("soundcard_name", ""))} '
-            f'active={bool_to_lp(player.get("active", False))},'
+            f'active={bool_to_lp(player.get("active", False))} '
             f'{timestamp_ns}'
         )
 
