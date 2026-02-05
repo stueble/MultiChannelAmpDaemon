@@ -47,7 +47,7 @@ def main():
         f'{timestamp_ns}'
     )
 
-    # Soundcards (beliebig viele)
+    # Soundcards (any number)
     for sc in data.get("soundcards", {}).values():
         active_players = ",".join(sc.get("active_players", []))
 
@@ -57,10 +57,21 @@ def main():
             f'soundcard_id={sc.get("id")},'
             f'soundcard_name={escape_string(sc.get("name", ""))} '
             f'state="{escape_string(sc.get("state", ""))}",'
-            f'active={bool_to_lp(sc.get("active", False))},'
+#            f'active={bool_to_lp(sc.get("active", False))},'
             f'player_count={sc.get("player_count", 0)},'
-            f'active_players="{escape_string(active_players)}",'
+#            f'active_players="{escape_string(active_players)}",'
             f'temperature={sc.get("temperature")} '
+            f'{timestamp_ns}'
+        )
+
+    # Players (any number)
+    for player in data.get("players", {}).values():
+        print(
+            f'amp_status,'
+            f'type=player,'
+            f'soundcard_id={player.get("soundcard_id")},'
+            f'soundcard_name={escape_string(player.get("soundcard_name", ""))} '
+            f'active={bool_to_lp(player.get("active", False))},'
             f'{timestamp_ns}'
         )
 
