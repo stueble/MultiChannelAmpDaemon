@@ -1,6 +1,6 @@
 # Multi-Channel Amplifier Control Daemon - Technical Specification
 
-## Version: 1.2.1
+## Version: 1.2.2
 
 ## Overview
 A Python daemon for Raspberry Pi 5 that controls a multi-channel amplifier system with three 8-channel USB sound cards and a main power supply. The daemon monitors Squeezelite instances and manages power states based on playback activity. It exports system status via JSON file for monitoring tools like Telegraf.
@@ -186,7 +186,7 @@ soundcards:
   "soundcards": {
     "1": {
       "id": 1,
-      "name": "KAB9_1",
+      "name": "KAB9 #1",
       "state": "on",
       "active": true,
       "active_players": ["wohnzimmer", "kueche"],
@@ -196,7 +196,7 @@ soundcards:
     },
     "2": {
       "id": 2,
-      "name": "KAB9_2",
+      "name": "KAB9 #2",
       "state": "suspended",
       "active": false,
       "active_players": [],
@@ -210,13 +210,13 @@ soundcards:
       "name": "wohnzimmer",
       "active": true,
       "soundcard_id": 1,
-      "soundcard_name": "KAB9_1"
+      "soundcard_name": "KAB9 #1"
     },
     "schlafzimmer": {
       "name": "schlafzimmer",
       "active": false,
       "soundcard_id": 2,
-      "soundcard_name": "KAB9_2"
+      "soundcard_name": "KAB9 #2"
     }
   }
 }
@@ -250,12 +250,14 @@ When a critical error occurs, execute in this order:
 
 ### Normal Shutdown
 When daemon stops normally (SIGTERM, SIGINT):
-1. Turn ON error LED (indicates daemon not running), set errorLedActive = True
-2. Stop status update timer
-3. Write final status to JSON file
-4. Close Unix socket
-5. Remove PID file, status file, JSON status file
-6. Exit
+1. Stop status update timer
+2. Mute and suspend all sound cards (MUTE HIGH → SUSPEND HIGH → LED LOW)
+3. Deactivate power supply (GPIO = LOW, inverted logic)
+4. Turn ON error LED (indicates daemon not running), set errorLedActive = True
+5. Write final status to JSON file
+6. Close Unix socket
+7. Remove PID file, status file, JSON status file
+8. Exit
 
 ### Daemon Instance Protection
 - Use PID file at `/var/run/MultiChannelAmpDaemon.pid`
@@ -306,10 +308,10 @@ When all players on a soundcard become inactive:
 #### 1. MultiChannelAmpDaemon.py (Main Daemon)
 **Purpose:** Background daemon that manages power supply and sound card states
 
-**Version:** 1.2.1
+**Version:** 1.2.2
 
 **Key Components:**
-- **Version Constant:** `VERSION = "1.2.1"`
+- **Version Constant:** `VERSION = "1.2.2"`
 - **Configuration Constants:** 
   - SOUNDCARD_TIMEOUT, SOUNDCARD_MUTE_DELAY, POWER_SUPPLY_TIMEOUT
   - GPIO_DELAY, GPIO_ERROR_LED, GPIO_POWER_SUPPLY
@@ -317,7 +319,7 @@ When all players on a soundcard become inactive:
   - File paths: STATUS_JSON_FILE, PID_FILE, SOCKET_PATH, STATUS_FILE
   - DEFAULT_CONFIG_PATH = "/etc/MultiChannelAmpDaemon.yaml"
 - **Enums:** DeviceState (OFF, ON)
-- **Data Classes:** SoundcardConfig (id, name, gpioSuspend, gpioMute, gpioLed, alsaCard, usbDevice, tempSensor, players)
+- **Data Classes:** SoundcardConfig (id, name, description, gpioSuspend, gpioMute, gpioLed, alsaCard, usbDevice, tempSensor, players)
 - **Classes:**
   - `SoundcardController`: Manages individual sound card via GPIO, includes daemon reference
   - `PowerSupplyController`: Manages main power supply via GPIO
@@ -415,7 +417,7 @@ Contains complete system configuration including:
 ================================================================================
 =                                                                              =
 =  MULTI-CHANNEL AMP DAEMON STARTING                                          =
-=  Version: 1.2.1                                                             =
+=  Version: 1.2.2                                                             =
 =                                                                              =
 ================================================================================
 ```
@@ -425,7 +427,7 @@ In debug mode, also show timeouts:
 ================================================================================
 =                                                                              =
 =  MULTI-CHANNEL AMP DAEMON STARTING (DEBUG MODE)                             =
-=  Version: 1.2.1                                                             =
+=  Version: 1.2.2                                                             =
 =  Soundcard timeout: 60s, Power supply timeout: 120s                         =
 =                                                                              =
 ================================================================================
@@ -566,7 +568,7 @@ cat /sys/bus/w1/devices/28-00000abcdef0/w1_slave
 8. **Alert System:** Temperature threshold alerts
 
 ### Version Management
-- Current: 1.2.1
+- Current: 1.2.2
 - Increment PATCH (1.2.x) for bug fixes
 - Increment MINOR (1.x.0) for new features (backward compatible)
 - Increment MAJOR (x.0.0) for breaking changes
@@ -655,3 +657,47 @@ tail -f /var/log/MultiChannelAmpDaemon.log | grep -E "(Muting|MUTE)"
 - Socket protocol unchanged
 - Status file format unchanged
 - Monitoring tools unaffected
+
+## Changes from Version 1.2.1 to 1.2.2
+
+### Improvements
+1. **Proper Shutdown Sequence:** Hardware is now shut down before error LED activation
+   - **Before (1.2.1):** Error LED turned on first, then cleanup
+   - **After (1.2.2):** Soundcards muted/suspended → Power supply off → Error LED on
+   - **Reason:** Ensures clean hardware shutdown even during daemon termination
+   - Prevents amplifiers staying powered if daemon crashes during shutdown
+
+2. **Human-Readable Status Output:** Status JSON now uses description field
+   - **Before (1.2.1):** `"name": "KAB9_1"` (technical ID)
+   - **After (1.2.2):** `"name": "KAB9 #1"` (readable description with umlauts)
+   - **Reason:** Better readability in logs and monitoring dashboards (Grafana, etc.)
+   - Umlauts and special characters now properly displayed
+
+### Implementation Details
+- `SoundcardConfig` dataclass: Added `description` field
+- `setupSoundcards()`: Loads description from YAML config (falls back to name if not present)
+- `getStatus()`: Uses `sc.config.description` instead of `sc.config.name` for JSON output
+- `stop()`: Reordered shutdown sequence:
+  1. Mute all active soundcards (MUTE HIGH)
+  2. Suspend all soundcards (SUSPEND HIGH, LED LOW)
+  3. Deactivate power supply (GPIO LOW)
+  4. Activate error LED (GPIO HIGH)
+  5. Write final status and cleanup files
+
+### Configuration File
+- New optional field: `description` in soundcard configuration
+- Example:
+  ```yaml
+  soundcards:
+    - id: 1
+      name: KAB9_1           # Technical ID (used internally)
+      description: "KAB9 #1" # Human-readable (used in status JSON)
+  ```
+- If `description` not provided, `name` is used as fallback (backward compatible)
+
+### Backward Compatibility
+- **Fully backward compatible** with configuration files from v1.2.1
+- Existing configs without `description` field continue to work (uses `name` as fallback)
+- Status JSON format unchanged (same fields, just different values in `name`)
+- Socket protocol unchanged
+- Monitoring tools may need adjustment if they rely on exact name matching

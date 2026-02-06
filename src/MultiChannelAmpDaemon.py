@@ -3,7 +3,7 @@
 Multi-Channel Amplifier Control Daemon
 Controls power supply and sound cards based on Squeezelite activity
 
-Version: 1.2.1
+Version: 1.2.2
 """
 
 import sys
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 # Version
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 # Configuration paths
 DEFAULT_CONFIG_PATH = "/etc/MultiChannelAmpDaemon.yaml"
@@ -63,6 +63,7 @@ class SoundcardConfig:
     """Configuration for a sound card"""
     id: int
     name: str
+    description: str  # Human-readable description (with umlauts, etc.)
     gpioSuspend: int  # GPIO pin for SUSPEND signal
     gpioMute: int     # GPIO pin for MUTE signal
     gpioLed: int      # GPIO pin for status LED
@@ -481,6 +482,7 @@ class AmpControlDaemon:
                 soundcardConfig = SoundcardConfig(
                     id=scConfig['id'],
                     name=scConfig['name'],
+                    description=scConfig.get('description', scConfig['name']),  # Use name as fallback
                     gpioSuspend=gpio['suspend'],
                     gpioMute=gpio['mute'],
                     gpioLed=gpio['led'],
@@ -625,7 +627,7 @@ class AmpControlDaemon:
 
             status['soundcards'][scId] = {
                 'id': scId,
-                'name': sc.config.name,
+                'name': sc.config.description,  # Use description for better readability (with umlauts)
                 'state': state,
                 'active': sc.isActive(),
                 'active_players': list(sc.activePlayers),
@@ -641,7 +643,7 @@ class AmpControlDaemon:
                     'name': playerName,
                     'active': isActive,
                     'soundcard_id': scId,
-                    'soundcard_name': sc.config.name
+                    'soundcard_name': sc.config.description  # Use description for better readability
                 }
 
         return status
@@ -798,7 +800,43 @@ class AmpControlDaemon:
         if self.statusUpdateTimer:
             self.statusUpdateTimer.cancel()
 
-        # Turn on error LED during shutdown
+        # Step 1: Shutdown all sound cards first
+        logger.info("Shutdown: Muting and suspending all sound cards")
+        try:
+            import RPi.GPIO as GPIO
+            for soundcardId, soundcard in self.soundcards.items():
+                try:
+                    if soundcard.state == DeviceState.ON:
+                        # Mute
+                        GPIO.output(soundcard.config.gpioMute, GPIO.HIGH)
+                        logger.debug(f"Shutdown: {soundcard.config.name} muted")
+                        time.sleep(GPIO_DELAY)
+
+                        # Suspend
+                        GPIO.output(soundcard.config.gpioSuspend, GPIO.HIGH)
+                        logger.debug(f"Shutdown: {soundcard.config.name} suspended")
+
+                        # LED off
+                        GPIO.output(soundcard.config.gpioLed, GPIO.LOW)
+                        soundcard.state = DeviceState.OFF
+                        logger.info(f"Shutdown: {soundcard.config.name} deactivated")
+                except Exception as e:
+                    logger.error(f"Error during shutdown of {soundcard.config.name}: {e}")
+        except Exception as e:
+            logger.error(f"Error during soundcard shutdown: {e}")
+
+        # Step 2: Turn off power supply
+        logger.info("Shutdown: Deactivating power supply")
+        try:
+            import RPi.GPIO as GPIO
+            if self.powerSupply.state == DeviceState.ON:
+                GPIO.output(self.powerSupply.gpioPin, GPIO.LOW)  # LOW = OFF (inverted)
+                self.powerSupply.state = DeviceState.OFF
+                logger.info("Shutdown: Power supply deactivated")
+        except Exception as e:
+            logger.error(f"Error during power supply shutdown: {e}")
+
+        # Step 3: Turn on error LED (indicates daemon not running)
         if self.errorLedInitialized:
             try:
                 import RPi.GPIO as GPIO
