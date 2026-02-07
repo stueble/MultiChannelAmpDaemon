@@ -3,7 +3,7 @@
 Multi-Channel Amplifier Control Daemon
 Controls power supply and sound cards based on Squeezelite activity
 
-Version: 1.2.2
+Version: 1.3.0
 """
 
 import sys
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 # Version
-VERSION = "1.2.2"
+VERSION = "1.3.0"
 
 # Configuration paths
 DEFAULT_CONFIG_PATH = "/etc/MultiChannelAmpDaemon.yaml"
@@ -54,6 +54,13 @@ logger = logging.getLogger('MultiChannelAmpDaemon')
 
 class DeviceState(Enum):
     """Device power states"""
+    SUSPENDED = 0  # Fully off (SUSPEND=HIGH, MUTE=HIGH, LED=LOW)
+    MUTED = 1      # Active but muted (SUSPEND=LOW, MUTE=HIGH, LED=HIGH)
+    ON = 2         # Active and unmuted (SUSPEND=LOW, MUTE=LOW, LED=HIGH)
+
+
+class PowerState(Enum):
+    """Power supply states"""
     OFF = 0
     ON = 1
 
@@ -101,7 +108,7 @@ class SoundcardController:
     def __init__(self, config: SoundcardConfig, daemon):
         self.config = config
         self.daemon = daemon  # Reference to parent daemon
-        self.state = DeviceState.OFF
+        self.state = DeviceState.SUSPENDED
         self.activePlayers: Set[str] = set()
         self.lastActive = 0
         self.timer: threading.Timer = None
@@ -136,20 +143,23 @@ class SoundcardController:
             raise
 
     def activatePlayer(self, playerName: str):
-        """Marks a player as active"""
+        """Marks a player as active and resumes/unmutes sound card"""
         with self.lock:
             wasEmpty = len(self.activePlayers) == 0
             self.activePlayers.add(playerName)
             self.lastActive = time.time()
 
-            # Cancel pending deactivation timer
+            # Cancel pending suspend timer
             if self.timer:
                 self.timer.cancel()
                 self.timer = None
 
-            # Activate sound card if needed
-            if wasEmpty or self.state == DeviceState.OFF:
-                self.activate()
+            # Resume or unmute sound card based on current state
+            if self.state == DeviceState.SUSPENDED:
+                self.resume()
+            elif self.state == DeviceState.MUTED:
+                self.unmute()
+            # If already ON, nothing to do
 
     def deactivatePlayer(self, playerName: str):
         """Marks a player as inactive"""
@@ -158,26 +168,27 @@ class SoundcardController:
 
             # If no players are active, mute immediately and schedule suspend
             if len(self.activePlayers) == 0:
-                self.muteImmediately()
-                self.scheduleDeactivation()
+                self.mute()
+                self.scheduleSuspend()
 
-    def activate(self):
-        """Activates the sound card via GPIO sequence"""
-        if self.state == DeviceState.ON:
+    def resume(self):
+        """Resume from suspended state (SUSPEND LOW → MUTE LOW → LED HIGH)"""
+        if self.state != DeviceState.SUSPENDED:
+            logger.debug(f"{self.config.name}: Already resumed (state={self.state.name})")
             return
 
-        logger.info(f"Activating sound card {self.config.name}")
+        logger.info(f"Resuming sound card {self.config.name}")
         try:
             import RPi.GPIO as GPIO
 
-            # Step 1: Set SUSPEND to 0 (active)
+            # Step 1: Set SUSPEND to LOW (active)
             GPIO.output(self.config.gpioSuspend, GPIO.LOW)
             logger.debug(f"{self.config.name}: SUSPEND set to LOW")
 
             # Wait for specified delay
             time.sleep(GPIO_DELAY)
 
-            # Step 2: Set MUTE to 0 (unmuted)
+            # Step 2: Set MUTE to LOW (unmuted)
             GPIO.output(self.config.gpioMute, GPIO.LOW)
             logger.debug(f"{self.config.name}: MUTE set to LOW")
 
@@ -186,52 +197,74 @@ class SoundcardController:
             logger.debug(f"{self.config.name}: LED set to HIGH")
 
             self.state = DeviceState.ON
-            logger.info(f"Sound card {self.config.name} activated")
+            logger.info(f"Sound card {self.config.name} resumed and active")
         except Exception as e:
-            logger.error(f"Exception activating {self.config.name}: {e}")
+            logger.error(f"Exception resuming {self.config.name}: {e}")
 
-    def muteImmediately(self):
-        """Mute the sound card immediately when no players are active"""
-        if self.state == DeviceState.OFF:
+    def unmute(self):
+        """Unmute sound card (MUTE LOW)"""
+        if self.state == DeviceState.SUSPENDED:
+            logger.warning(f"{self.config.name}: Cannot unmute while suspended, use resume() instead")
             return
 
-        logger.info(f"Muting sound card {self.config.name} (no active players)")
+        if self.state == DeviceState.ON:
+            logger.debug(f"{self.config.name}: Already unmuted")
+            return
+
+        logger.info(f"Unmuting sound card {self.config.name}")
         try:
             import RPi.GPIO as GPIO
+            GPIO.output(self.config.gpioMute, GPIO.LOW)
+            logger.debug(f"{self.config.name}: MUTE set to LOW")
 
-            # Set MUTE to 1 (muted) - no lock needed, called from locked context
+            self.state = DeviceState.ON
+            logger.info(f"Sound card {self.config.name} unmuted")
+        except Exception as e:
+            logger.error(f"Exception unmuting {self.config.name}: {e}")
+
+    def mute(self):
+        """Mute sound card (MUTE HIGH)"""
+        if self.state == DeviceState.SUSPENDED:
+            logger.debug(f"{self.config.name}: Already suspended (includes mute)")
+            return
+
+        if self.state == DeviceState.MUTED:
+            logger.debug(f"{self.config.name}: Already muted")
+            return
+
+        logger.info(f"Muting sound card {self.config.name}")
+        try:
+            import RPi.GPIO as GPIO
             GPIO.output(self.config.gpioMute, GPIO.HIGH)
-            logger.debug(f"{self.config.name}: MUTE set to HIGH (immediate)")
+            logger.debug(f"{self.config.name}: MUTE set to HIGH")
 
+            self.state = DeviceState.MUTED
+            logger.info(f"Sound card {self.config.name} muted")
         except Exception as e:
             logger.error(f"Exception muting {self.config.name}: {e}")
 
-    def deactivate(self):
-        """Deactivates the sound card via suspend after timeout"""
+    def suspend(self):
+        """Suspend sound card after timeout (MUTE HIGH → SUSPEND HIGH → LED LOW)"""
         with self.lock:
             # Double-check no players became active during timeout
             if len(self.activePlayers) > 0:
-                logger.info(f"Deactivation of {self.config.name} cancelled - active players present")
+                logger.info(f"Suspend of {self.config.name} cancelled - active players present")
                 # Unmute since players are active again
-                try:
-                    import RPi.GPIO as GPIO
-                    GPIO.output(self.config.gpioMute, GPIO.LOW)
-                    logger.debug(f"{self.config.name}: MUTE cleared (players active)")
-                except:
-                    pass
+                self.unmute()
                 return
 
-            if self.state == DeviceState.OFF:
+            if self.state == DeviceState.SUSPENDED:
+                logger.debug(f"{self.config.name}: Already suspended")
                 return
 
             logger.info(f"Suspending sound card {self.config.name}")
             try:
                 import RPi.GPIO as GPIO
 
-                # MUTE should already be HIGH from muteImmediately()
-                # Just ensure it's set
-                GPIO.output(self.config.gpioMute, GPIO.HIGH)
-                logger.debug(f"{self.config.name}: MUTE confirmed HIGH")
+                # Ensure MUTE is HIGH (should already be from mute())
+                if self.state != DeviceState.MUTED:
+                    GPIO.output(self.config.gpioMute, GPIO.HIGH)
+                    logger.debug(f"{self.config.name}: MUTE set to HIGH")
 
                 # Wait for mute-to-suspend delay
                 logger.debug(f"{self.config.name}: Waiting {SOUNDCARD_MUTE_DELAY}s before suspend")
@@ -241,11 +274,10 @@ class SoundcardController:
                 if len(self.activePlayers) > 0:
                     logger.info(f"Suspend of {self.config.name} cancelled during delay")
                     # Unmute again
-                    GPIO.output(self.config.gpioMute, GPIO.LOW)
-                    logger.debug(f"{self.config.name}: MUTE cleared (players active)")
+                    self.unmute()
                     return
 
-                # Set SUSPEND to 1 (suspended)
+                # Set SUSPEND to HIGH (suspended)
                 GPIO.output(self.config.gpioSuspend, GPIO.HIGH)
                 logger.debug(f"{self.config.name}: SUSPEND set to HIGH")
 
@@ -256,7 +288,7 @@ class SoundcardController:
                 GPIO.output(self.config.gpioLed, GPIO.LOW)
                 logger.debug(f"{self.config.name}: LED set to LOW")
 
-                self.state = DeviceState.OFF
+                self.state = DeviceState.SUSPENDED
                 logger.info(f"Sound card {self.config.name} suspended")
 
                 # Check if power supply can be deactivated
@@ -266,20 +298,29 @@ class SoundcardController:
             except Exception as e:
                 logger.error(f"Exception suspending {self.config.name}: {e}")
 
-    def scheduleDeactivation(self):
-        """Schedules deactivation after timeout"""
+    def scheduleSuspend(self):
+        """Schedules suspend after timeout"""
         if self.timer:
             self.timer.cancel()
 
-        logger.info(f"Scheduling deactivation of {self.config.name} in {SOUNDCARD_TIMEOUT}s")
-        self.timer = threading.Timer(SOUNDCARD_TIMEOUT, self.deactivate)
+        logger.info(f"Scheduling suspend of {self.config.name} in {SOUNDCARD_TIMEOUT}s")
+        self.timer = threading.Timer(SOUNDCARD_TIMEOUT, self.suspend)
         self.timer.daemon = True
         self.timer.start()
 
     def isActive(self) -> bool:
-        """Checks if the sound card is active"""
+        """Checks if the sound card is active (not suspended)"""
         # Don't use lock here to avoid deadlock when called from daemon
-        return self.state == DeviceState.ON
+        return self.state != DeviceState.SUSPENDED
+
+    def isMuted(self) -> bool:
+        """Checks if the sound card is muted"""
+        return self.state == DeviceState.MUTED
+
+    def isSuspended(self) -> bool:
+        """Checks if the sound card is suspended"""
+        return self.state == DeviceState.SUSPENDED
+
 
 
 class PowerSupplyController:
@@ -287,7 +328,7 @@ class PowerSupplyController:
 
     def __init__(self, gpioPin: int = GPIO_POWER_SUPPLY):
         self.gpioPin = gpioPin
-        self.state = DeviceState.OFF
+        self.state = PowerState.OFF
         self.timer: threading.Timer = None
         self.lock = threading.Lock()
         self.setupGpio()
@@ -312,7 +353,7 @@ class PowerSupplyController:
                 self.timer.cancel()
                 self.timer = None
 
-            if self.state == DeviceState.ON:
+            if self.state == PowerState.ON:
                 logger.debug("Power supply already active")
                 return
 
@@ -320,7 +361,7 @@ class PowerSupplyController:
             try:
                 import RPi.GPIO as GPIO
                 GPIO.output(self.gpioPin, GPIO.HIGH)  # HIGH = ON (inverted)
-                self.state = DeviceState.ON
+                self.state = PowerState.ON
                 logger.info("Main power supply activated (GPIO=HIGH, inverted)")
             except Exception as e:
                 logger.error(f"Error activating power supply: {e}")
@@ -339,14 +380,14 @@ class PowerSupplyController:
     def deactivate(self):
         """Deactivates the power supply (GPIO=0, inverted logic)"""
         with self.lock:
-            if self.state == DeviceState.OFF:
+            if self.state == PowerState.OFF:
                 return
 
             logger.info("Deactivating main power supply")
             try:
                 import RPi.GPIO as GPIO
                 GPIO.output(self.gpioPin, GPIO.LOW)  # LOW = OFF (inverted)
-                self.state = DeviceState.OFF
+                self.state = PowerState.OFF
                 logger.info("Main power supply deactivated (GPIO=LOW, inverted)")
             except Exception as e:
                 logger.error(f"Error deactivating power supply: {e}")
@@ -354,7 +395,7 @@ class PowerSupplyController:
     def isActive(self) -> bool:
         """Checks if the power supply is active"""
         # Don't use lock here to avoid deadlock when called from daemon
-        return self.state == DeviceState.ON
+        return self.state == PowerState.ON
 
 
 class AmpControlDaemon:
@@ -422,22 +463,22 @@ class AmpControlDaemon:
             for soundcardId, soundcard in self.soundcards.items():
                 try:
                     # Force immediate deactivation
-                    if soundcard.state == DeviceState.ON:
+                    if soundcard.state != DeviceState.SUSPENDED:
                         GPIO.output(soundcard.config.gpioMute, GPIO.HIGH)
                         time.sleep(GPIO_DELAY)
                         GPIO.output(soundcard.config.gpioSuspend, GPIO.HIGH)
                         GPIO.output(soundcard.config.gpioLed, GPIO.LOW)
-                        soundcard.state = DeviceState.OFF
-                        logger.info(f"Emergency shutdown: {soundcard.config.name} deactivated")
+                        soundcard.state = DeviceState.SUSPENDED
+                        logger.info(f"Emergency shutdown: {soundcard.config.name} suspended")
                 except Exception as e:
                     logger.error(f"Error during emergency shutdown of {soundcard.config.name}: {e}")
 
             # Step 3: Turn off power supply
             logger.info("Emergency shutdown: Deactivating power supply")
             try:
-                if self.powerSupply.state == DeviceState.ON:
+                if self.powerSupply.state == PowerState.ON:
                     GPIO.output(self.powerSupply.gpioPin, GPIO.LOW)  # LOW = OFF (inverted)
-                    self.powerSupply.state = DeviceState.OFF
+                    self.powerSupply.state = PowerState.OFF
                     logger.info("Emergency shutdown: Power supply deactivated")
             except Exception as e:
                 logger.error(f"Error during power supply shutdown: {e}")
@@ -612,12 +653,12 @@ class AmpControlDaemon:
         }
 
         for scId, sc in self.soundcards.items():
-            # Determine state based on GPIO and active players
-            if len(sc.activePlayers) > 0:
+            # Map DeviceState to string representation
+            if sc.state == DeviceState.ON:
                 state = 'on'
-            elif sc.isActive():
-                state = 'muted'  # Active but no players
-            else:
+            elif sc.state == DeviceState.MUTED:
+                state = 'muted'
+            else:  # DeviceState.SUSPENDED
                 state = 'suspended'
 
             # Read temperature if sensor configured
@@ -806,7 +847,7 @@ class AmpControlDaemon:
             import RPi.GPIO as GPIO
             for soundcardId, soundcard in self.soundcards.items():
                 try:
-                    if soundcard.state == DeviceState.ON:
+                    if soundcard.state != DeviceState.SUSPENDED:
                         # Mute
                         GPIO.output(soundcard.config.gpioMute, GPIO.HIGH)
                         logger.debug(f"Shutdown: {soundcard.config.name} muted")
@@ -818,8 +859,8 @@ class AmpControlDaemon:
 
                         # LED off
                         GPIO.output(soundcard.config.gpioLed, GPIO.LOW)
-                        soundcard.state = DeviceState.OFF
-                        logger.info(f"Shutdown: {soundcard.config.name} deactivated")
+                        soundcard.state = DeviceState.SUSPENDED
+                        logger.info(f"Shutdown: {soundcard.config.name} suspended")
                 except Exception as e:
                     logger.error(f"Error during shutdown of {soundcard.config.name}: {e}")
         except Exception as e:
@@ -829,9 +870,9 @@ class AmpControlDaemon:
         logger.info("Shutdown: Deactivating power supply")
         try:
             import RPi.GPIO as GPIO
-            if self.powerSupply.state == DeviceState.ON:
+            if self.powerSupply.state == PowerState.ON:
                 GPIO.output(self.powerSupply.gpioPin, GPIO.LOW)  # LOW = OFF (inverted)
-                self.powerSupply.state = DeviceState.OFF
+                self.powerSupply.state = PowerState.OFF
                 logger.info("Shutdown: Power supply deactivated")
         except Exception as e:
             logger.error(f"Error during power supply shutdown: {e}")
