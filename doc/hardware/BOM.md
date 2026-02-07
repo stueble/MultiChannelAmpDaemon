@@ -2,7 +2,8 @@
 
 | Quantity | Component | Notes |
 |---|---|---|
-| 1 | 19" Rack Mount Case | |
+| 1 | 19" Rack Mount Case | I am using a very cheap case "SIN 4 HE SW" |
+| 1 | IEC connector with integrated EMI filter, 6A | KMF 1.1161 is what I am using | 
 | 1 | Raspberry Pi5 | I decided to use a Pi5 to prevent any issues with USB, CPU or networking performance. |
 | 1 | Waveshare Power Over Ethernet HAT G | I use a PoE hat, because I have a PeO switch anyway. Alternatively, use a separate 5V/2,5A power supply |
 | 3 | SURE KAB9 USB sound card | Cards can be muted and suspended using two separated connectors. Saves some energy if not in use. |
@@ -12,6 +13,7 @@
 | 1 | Hailege PC817 8 Channel Optokoppler Module | Resistors are too high for 3,3V of the GPIOs. I removed both, SMD LED and SMD resistor and connected a LED for the case in combination with another resistor |
 | 24 | KF2EDGWB | 4-Pin connector named KF2EDGWB at aliexpress |
 | x | Misc | LEDs, cable, connectors | 
+
 
 
 
